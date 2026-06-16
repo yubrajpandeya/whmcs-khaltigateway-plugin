@@ -82,6 +82,12 @@ function khaltigateway_epay_api_authentication_key($gateway_params)
     return $gateway_params["{$mode_name}_api_key"];
 }
 
+function khaltigateway_refund_api_endpoint($gateway_params)
+{
+    $mode_name = khaltigateway_get_production_mode($gateway_params);
+    return constant("KHALTIGATEWAY_EPAY_" . strtoupper($mode_name) . "_REFUND_ENDPOINT");
+}
+
 function khaltigateway_make_api_call($gateway_params, $api, $payload)
 {
     if (!$api) {
@@ -124,24 +130,43 @@ function khaltigateway_make_api_call($gateway_params, $api, $payload)
     return $decoded_response;
 }
 
-function khaltigateway_refund_api_call($api_key, $transactionIdToRefund)
+function khaltigateway_refund_api_call($gateway_params, $transactionIdToRefund, $payload = array())
 {
-    $apiEndpoint = constant("KHALTIGATEWAY_EPAY_REFUND_ENDPOINT") . $transactionIdToRefund . "/refund/";
+    $apiEndpoint = khaltigateway_refund_api_endpoint($gateway_params) . rawurlencode($transactionIdToRefund) . "/refund/";
+    $api_key = khaltigateway_epay_api_authentication_key($gateway_params);
+    $post_data = json_encode($payload);
 
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $apiEndpoint);
     curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 1);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         'Content-Type: application/json',
         'Authorization: Key ' . $api_key
     ]);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
 
     $response = curl_exec($ch);
+    $curl_error = curl_error($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    return [json_decode($response, true), $httpCode];
+    if ($curl_error) {
+        return [
+            'response' => null,
+            'http_code' => $httpCode,
+            'error' => $curl_error,
+        ];
+    }
+
+    return [
+        'response' => json_decode($response, true),
+        'http_code' => $httpCode,
+        'error' => null,
+    ];
 }
 
 function khaltigateway_epay_initiate($gateway_params, $checkout_params)

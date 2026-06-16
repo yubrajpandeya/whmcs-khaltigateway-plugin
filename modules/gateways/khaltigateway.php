@@ -71,57 +71,81 @@ function khaltigateway_link($gateway_params)
     return  khaltigateway_invoicepage_code($gateway_params);
 }
 
-/**
- * @TODO: Implement this function
- */
 function khaltigateway_refund($gateway_params)
 {
-    return false;
+    $gateway_module = $gateway_params['paymentmethod'] ?? KHALTIGATEWAY_WHMCS_MODULE_NAME;
+    $transaction_id = $gateway_params['transid'] ?? '';
+    $refund_amount = isset($gateway_params['amount']) ? floatval($gateway_params['amount']) : 0.0;
+    $currency_code = $gateway_params['currency'] ?? 'NPR';
+    $client_phone = $gateway_params['clientdetails']['phonenumber'] ?? '';
 
-    // Gateway Configuration Parameters
-    $accountId = $gateway_params['accountID'];
-    $secretKey = $gateway_params['secretKey'];
-    $testMode = $gateway_params['testMode'];
-    $dropdownField = $gateway_params['dropdownField'];
-    $radioField = $gateway_params['radioField'];
-    $textareaField = $gateway_params['textareaField'];
+    if (!$transaction_id) {
+        return array(
+            'status' => 'error',
+            'rawdata' => 'Missing Khalti transaction ID for refund.',
+        );
+    }
 
-    // Transaction Parameters
-    $transactionIdToRefund = $gateway_params['transid'];
-    $refundAmount = $gateway_params['amount'];
-    $currencyCode = $gateway_params['currency'];
+    if ($refund_amount <= 0) {
+        return array(
+            'status' => 'error',
+            'rawdata' => 'Refund amount must be greater than zero.',
+        );
+    }
 
-    // Client Parameters
-    $firstname = $gateway_params['clientdetails']['firstname'];
-    $lastname = $gateway_params['clientdetails']['lastname'];
-    $email = $gateway_params['clientdetails']['email'];
-    $address1 = $gateway_params['clientdetails']['address1'];
-    $address2 = $gateway_params['clientdetails']['address2'];
-    $city = $gateway_params['clientdetails']['city'];
-    $state = $gateway_params['clientdetails']['state'];
-    $postcode = $gateway_params['clientdetails']['postcode'];
-    $country = $gateway_params['clientdetails']['country'];
-    $phone = $gateway_params['clientdetails']['phonenumber'];
+    if (!khaltigateway_validate_currency($currency_code)) {
+        $converted_amount = khaltigateway_convert_currency($currency_code, $refund_amount);
+        if ($converted_amount === false) {
+            return array(
+                'status' => 'error',
+                'rawdata' => "Unable to convert refund currency {$currency_code} to NPR.",
+            );
+        }
+        $refund_amount = floatval($converted_amount);
+    }
 
-    // System Parameters
-    $companyName = $gateway_params['companyname'];
-    $system_url = $gateway_params['systemurl'];
-    $langPayNow = $gateway_params['langpaynow'];
-    $moduleDisplayName = $gateway_params['name'];
-    $moduleName = $gateway_params['paymentmethod'];
-    $whmcsVersion = $gateway_params['whmcsVersion'];
+    $payload = array(
+        'amount' => round($refund_amount, 2),
+    );
 
-    // perform API call to initiate refund and interpret result
+    $normalized_phone = preg_replace('/\D+/', '', $client_phone);
+    if (strlen($normalized_phone) > 10 && substr($normalized_phone, 0, 3) === '977') {
+        $normalized_phone = substr($normalized_phone, -10);
+    }
+    if ($normalized_phone) {
+        $payload['mobile'] = $normalized_phone;
+    }
+
+    $refund_response = khaltigateway_refund_api_call($gateway_params, $transaction_id, $payload);
+    $raw_data = array(
+        'request' => array(
+            'transaction_id' => $transaction_id,
+            'payload' => $payload,
+            'mode' => khaltigateway_get_production_mode($gateway_params),
+        ),
+        'response' => $refund_response,
+    );
+
+    $http_code = $refund_response['http_code'] ?? 0;
+    $api_response = $refund_response['response'] ?? array();
+    $detail = is_array($api_response) ? strtolower($api_response['detail'] ?? '') : '';
+
+    if ($http_code >= 200 && $http_code < 300 && strpos($detail, 'successful') !== false) {
+        return array(
+            'status' => 'success',
+            'rawdata' => $raw_data,
+            'transid' => 'refund-' . $transaction_id . '-' . time(),
+            'fees' => 0,
+        );
+    }
+
+    if (function_exists('logTransaction')) {
+        logTransaction($gateway_module, $raw_data, 'Refund Error');
+    }
 
     return array(
-        // 'success' if successful, otherwise 'declined', 'error' for failure
-        'status' => 'success',
-        // Data to be recorded in the gateway log - can be a string or array
-        'rawdata' => $responseData,
-        // Unique Transaction ID for the refund transaction
-        'transid' => $refundTransactionId,
-        // Optional fee amount for the fee value refunded
-        'fees' => $feeAmount,
+        'status' => 'error',
+        'rawdata' => $raw_data,
     );
 }
 
