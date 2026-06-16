@@ -41,7 +41,11 @@ try {
 
     // Fetch callback parameters (support POST form, GET or raw JSON)
     $rawInput = file_get_contents('php://input');
-    $callback_args = !empty($_POST) ? $_POST : (!empty($_GET) ? $_GET : (!empty($rawInput) ? json_decode($rawInput, true) : []));
+    $decoded_input = !empty($rawInput) ? json_decode($rawInput, true) : [];
+    if (!is_array($decoded_input)) {
+        $decoded_input = [];
+    }
+    $callback_args = !empty($_POST) ? $_POST : (!empty($_GET) ? $_GET : $decoded_input);
 
     // Basic early logging to help diagnose production-only failures
     $gateway_module = ($khaltigateway_gateway_params['paymentmethod'] ?? 'khaltigateway');
@@ -52,9 +56,6 @@ try {
     
     // Extract essential fields
     $pidx = $callback_args['pidx'] ?? null;
-    $khalti_transaction_id = $callback_args['transaction_id'] ?? ($callback_args['txnId'] ?? null);
-    $amount_paisa = isset($callback_args['amount']) ? intval($callback_args['amount']) : null;
-    $amount_rs = $amount_paisa !== null ? $amount_paisa / 100 : null;
     $purchase_order_id = $callback_args['purchase_order_id'] ?? null;
 
     // Helper: safe error response and logging
@@ -76,8 +77,8 @@ try {
     logTransaction($gateway_module, "Callback received: " . json_encode($callback_args), "Debug");
 
     // Validate required fields
-    if (!$khalti_transaction_id || !$amount_paisa) {
-        error_resp("Missing transaction ID or amount.", $gateway_module);
+    if (!$pidx) {
+        error_resp("Missing pidx parameter.", $gateway_module);
     }
     if (!$purchase_order_id) {
         error_resp("Missing purchase_order_id parameter.", $gateway_module);
@@ -85,11 +86,19 @@ try {
 
     // Extract invoice ID safely
     $invoice_id = $purchase_order_id;
-    $parts = explode('_', $purchase_order_id);
-    if (isset($parts[0])) {
-        $invoiceParts = explode(':', $parts[0]);
-        if (isset($invoiceParts[1]) && is_numeric($invoiceParts[1])) {
-            $invoice_id = $invoiceParts[1];
+    $expected_amount_paisa = null;
+    if (preg_match('/(?:^|[:_])invoice:(\d+)(?::amount:(\d+))?/i', $purchase_order_id, $matches)) {
+        $invoice_id = $matches[1];
+        if (isset($matches[2])) {
+            $expected_amount_paisa = intval($matches[2]);
+        }
+    } else {
+        $parts = explode('_', $purchase_order_id);
+        if (isset($parts[0])) {
+            $invoiceParts = explode(':', $parts[0]);
+            if (isset($invoiceParts[1]) && is_numeric($invoiceParts[1])) {
+                $invoice_id = $invoiceParts[1];
+            }
         }
     }
     if (!$invoice_id || !is_numeric($invoice_id)) {
@@ -104,6 +113,17 @@ try {
 
     logTransaction($gateway_module, "Khalti response: " . json_encode($response), "Debug");
 
+    if (($response['pidx'] ?? null) !== $pidx) {
+        error_resp("Khalti lookup pidx mismatch.", $gateway_module);
+    }
+
+    $khalti_transaction_id = $response['transaction_id'] ?? ($callback_args['transaction_id'] ?? ($callback_args['txnId'] ?? null));
+    $amount_paisa = isset($response['total_amount']) ? intval($response['total_amount']) : null;
+    $amount_rs = $amount_paisa !== null ? $amount_paisa / 100 : null;
+    if ($expected_amount_paisa !== null && $amount_paisa !== $expected_amount_paisa) {
+        error_resp("Amount mismatch: Payment was initiated for {$expected_amount_paisa} paisa, lookup returned {$amount_paisa} paisa.", $gateway_module);
+    }
+
     // Handle payment status
     $status = strtolower($response['status'] ?? '');
     switch ($status) {
@@ -114,6 +134,14 @@ try {
             error_resp("Payment request expired.", $gateway_module);
         case 'pending':
             error_resp("Payment is still pending.", $gateway_module);
+        case 'initiated':
+            error_resp("Payment is not completed yet.", $gateway_module);
+        case 'user canceled':
+        case 'canceled':
+        case 'cancelled':
+            error_resp("Payment was canceled.", $gateway_module);
+        case 'partially refunded':
+            error_resp("Payment has been partially refunded.", $gateway_module);
         case 'completed':
             // continue
             break;
@@ -124,13 +152,16 @@ try {
     // Fetch invoice
     $invoice = localAPI("GetInvoice", ["invoiceid" => $invoice_id]);
     if (!$invoice || ($invoice['result'] ?? '') !== 'success') {
-        $invoice_exists = false;
+        error_resp("Invoice #{$invoice_id} not found.", $gateway_module);
     } else {
         $invoice_exists = true;
-        $expectedAmount = floatval($invoice['total']);
-        if (abs($amount_rs - $expectedAmount) > 0.01) {
-            error_resp("Amount mismatch: Invoice expects {$expectedAmount}, received {$amount_rs}.", $gateway_module);
+        if ($amount_rs === null) {
+            error_resp("Missing Khalti payment amount after lookup.", $gateway_module);
         }
+    }
+
+    if (!$khalti_transaction_id) {
+        error_resp("Missing Khalti transaction ID after lookup.", $gateway_module);
     }
 
     // Prepare submission
@@ -148,11 +179,13 @@ try {
     logTransaction($gateway_module, "Submitting payment to WHMCS: " . json_encode($submit_data), "Debug");
 
     // Acknowledge WHMCS
-    khaltigateway_acknowledge_whmcs_for_payment($submit_data);
+    if (!khaltigateway_acknowledge_whmcs_for_payment($submit_data)) {
+        error_resp("Failed to record payment in WHMCS.", $gateway_module);
+    }
     logTransaction($gateway_module, "Payment processing completed successfully.", "Success");
 
     // Prepare invoice URL safely
-    $system_url = rtrim($khaltigateway_gateway_params['SystemURL'], '/');
+    $system_url = rtrim($khaltigateway_gateway_params['systemurl'] ?? $khaltigateway_gateway_params['SystemURL'], '/');
     $invoice_url = $system_url . "/viewinvoice.php?id=" . $invoice_id;
 
     // Handle GET redirect safely

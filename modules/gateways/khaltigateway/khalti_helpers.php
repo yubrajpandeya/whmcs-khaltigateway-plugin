@@ -108,13 +108,20 @@ function khaltigateway_make_api_call($gateway_params, $api, $payload)
     $response = curl_exec($ch);
     if (curl_error($ch)) {
         khaltigateway_debug($gateway_params, $ch);
+        curl_close($ch);
         return null;
     }
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
     khaltigateway_debug($gateway_params, $response);
 
-    return json_decode($response, true);
+    $decoded_response = json_decode($response, true);
+    if ($http_code < 200 || $http_code >= 300 || !is_array($decoded_response)) {
+        return null;
+    }
+
+    return $decoded_response;
 }
 
 function khaltigateway_refund_api_call($api_key, $transactionIdToRefund)
@@ -131,8 +138,8 @@ function khaltigateway_refund_api_call($api_key, $transactionIdToRefund)
     ]);
 
     $response = curl_exec($ch);
-    curl_close($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
 
     return [json_decode($response, true), $httpCode];
 }

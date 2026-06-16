@@ -15,17 +15,21 @@ function khaltigateway_noinvoicepage_code()
 
 function khaltigateway_invoicepage_code($gateway_params)
 {
-    $system_url = $gateway_params['systemurl'];
+    $system_url = rtrim($gateway_params['systemurl'], '/') . '/';
     $invoice_id = $gateway_params['invoiceid'];
 
     $description = htmlspecialchars(strip_tags($gateway_params["description"]));
 
     
     $invoice = khaltigateway_whmcs_get_invoice($invoice_id);
+    if (!$invoice || ($invoice['result'] ?? '') !== 'success') {
+        return file_get_contents(__DIR__ . "/templates/initiate_failed.html");
+    }
+
     $userid = $invoice["userid"];
-    $subtotal = floatval($invoice['subtotal']); 
-    $vat_amount = floatval($invoice['tax']);    
-    $total_amount = floatval($invoice['total']);
+    $total_amount = isset($gateway_params['amount'])
+        ? floatval($gateway_params['amount'])
+        : floatval($invoice['total']);
 
     $customer_details = khaltigateway_whmcs_get_client($userid);
     $customer_name = $customer_details["fullname"];
@@ -34,45 +38,19 @@ function khaltigateway_invoicepage_code($gateway_params)
 
    
     $total_in_paisa = intval(round($total_amount * 100));
+    if ($total_in_paisa < 1) {
+        return file_get_contents(__DIR__ . "/templates/initiate_failed.html");
+    }
 
     $module_url = "modules/gateways/khaltigateway/";
     $callback_url = "{$system_url}{$module_url}callback.php";
-    $invoice_url = "{$system_url}viewinvoice.php?id={$invoice_id}";
-    $successUrl = "{$invoice_url}&paymentsuccess=true";
-
-    $cart = array();
-
-    foreach ($gateway_params["cart"]->items as $item) {
-        $amount = $item->getAmount()->getValue();
-        $currency_code = $item->getAmount()->getCurrency()['code'];
-
-        if (!khaltigateway_validate_currency($currency_code)) {
-            $converted_amount = khaltigateway_convert_currency($currency_code, $amount);
-            if ($converted_amount === false) {
-                return khaltigateway_invalid_currency_page();
-            }
-            $amount = $converted_amount;
-        }
-
-        $item_amount_in_paisa = intval(round($amount * 100));
-        $qty = intval($item->getQuantity());
-        if ($item_amount_in_paisa < 1 || $qty < 1) continue;
-        $unit_price = intval(round($item_amount_in_paisa / $qty));
-
-        $cart[] = array(
-            "name" => $item->getName(),
-            "identity" => $item->getUuid(),
-            "total_price" => $item_amount_in_paisa,
-            "quantity" => $qty,
-            "unit_price" => $unit_price
-        );
-    }
+    $purchase_order_id = "invoice:{$invoice_id}:amount:{$total_in_paisa}";
 
     $checkout_args = array(
         "return_url" => "{$callback_url}",
         "website_url" => "{$system_url}",
         "amount" => $total_in_paisa,
-        "purchase_order_id" => "{$invoice_id}",
+        "purchase_order_id" => $purchase_order_id,
         "purchase_order_name" => "{$description}",
         "customer_info" => array(
             "name" => $customer_name,
@@ -81,15 +59,19 @@ function khaltigateway_invoicepage_code($gateway_params)
         ),
         "amount_breakdown" => array(
             array(
-                "label" => "Subtotal",
-                "amount" => intval(round($subtotal * 100))
-            ),
-            array(
-                "label" => "VAT",
-                "amount" => intval(round($vat_amount * 100))
+                "label" => "Invoice Total",
+                "amount" => $total_in_paisa
             ),
         ),
-        "product_details" => $cart
+        "product_details" => array(
+            array(
+                "name" => $description,
+                "identity" => "{$invoice_id}",
+                "total_price" => $total_in_paisa,
+                "quantity" => 1,
+                "unit_price" => $total_in_paisa
+            )
+        )
     );
 
     return khaltigateway_pidx_page($gateway_params, $total_amount, $checkout_args);
@@ -99,7 +81,7 @@ function khaltigateway_invoicepage_code($gateway_params)
 function khaltigateway_pidx_page($gateway_params, $npr_amount, $checkout_args)
 {
     $payment_initiate = khaltigateway_epay_initiate($gateway_params, $checkout_args);
-    $pidx = $payment_initiate["pidx"];
+    $pidx = is_array($payment_initiate) ? ($payment_initiate["pidx"] ?? null) : null;
 
     if (!$pidx) {
         return file_get_contents(__DIR__ . "/templates/initiate_failed.html");
@@ -112,7 +94,11 @@ function khaltigateway_pidx_page($gateway_params, $npr_amount, $checkout_args)
      * gateway_params
      * npr_amount
      */
-    $pidx_url = $payment_initiate["payment_url"];
+    $pidx_url = $payment_initiate["payment_url"] ?? null;
+    if (!$pidx_url) {
+        return file_get_contents(__DIR__ . "/templates/initiate_failed.html");
+    }
+
     return file_include_contents(__DIR__ . "/templates/invoice_payment_button.php", array(
         'khalti_logo_url' => 'https://cdn.nayathegana.com/media/2025/07/13/23471783407643cb921f718ed30726b9.png',
         "pidx_url" => $pidx_url,

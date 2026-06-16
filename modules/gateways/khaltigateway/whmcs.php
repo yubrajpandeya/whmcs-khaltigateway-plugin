@@ -15,8 +15,6 @@ function khaltigateway_acknowledge_whmcs_for_payment($post_data)
          *
          * Obtains the transaction ID from the post data.
          */
-        $khalti_transaction_id = $post_data["khalti_transaction_id"];
-
         $wh_payload = $post_data['wh_payload'];
         $wh_response = $post_data['wh_response'];
         $wh_invoiceId = $post_data['wh_invoiceId'];
@@ -46,7 +44,7 @@ function khaltigateway_acknowledge_whmcs_for_payment($post_data)
          *
          * @param string $transactionId Unique Transaction ID
          */
-        checkCbTransID($khalti_transaction_id);
+        checkCbTransID($wh_transactionId);
 
         /**
          * Log Transaction.
@@ -91,7 +89,7 @@ function khaltigateway_acknowledge_whmcs_for_payment($post_data)
          * @param int $invoiceId        Invoice ID
          * @param bool $paymentSuccess  Payment status
          */
-        callback3DSecureRedirect($wh_invoiceId, $wh_paymentSuccess);
+        return true;
 
     } catch (Exception $e) {
         /**
@@ -110,6 +108,6 @@ function khaltigateway_acknowledge_whmcs_for_payment($post_data)
          *
          * Stops the process and displays the error message.
          */
-        die("Error processing payment: " . $e->getMessage());
+        return false;
     }
 }
