@@ -104,8 +104,16 @@ function khaltigateway_refund($gateway_params)
         $refund_amount = floatval($converted_amount);
     }
 
+    $refund_amount_paisa = intval(round($refund_amount * 100));
+    if ($refund_amount_paisa < 1) {
+        return array(
+            'status' => 'error',
+            'rawdata' => 'Refund amount must be at least 1 paisa.',
+        );
+    }
+
     $payload = array(
-        'amount' => round($refund_amount, 2),
+        'amount' => $refund_amount_paisa,
     );
 
     $normalized_phone = preg_replace('/\D+/', '', $client_phone);
@@ -121,6 +129,8 @@ function khaltigateway_refund($gateway_params)
         'request' => array(
             'transaction_id' => $transaction_id,
             'payload' => $payload,
+            'amount_npr' => $refund_amount,
+            'amount_paisa' => $refund_amount_paisa,
             'mode' => khaltigateway_get_production_mode($gateway_params),
         ),
         'response' => $refund_response,
